@@ -99,11 +99,15 @@ form button { padding: 10px 16px; }
 
 /* ---------- Peek board (hidden unless peeking) ---------- */
 #board {
-  display: none; grid-template-columns: repeat(8, 1fr); width: 100%; max-width: 360px;
+  /* 8 equal columns AND 8 equal rows, so squares stay square no matter what's on them */
+  display: none; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
+  width: 100%; max-width: 360px;
   margin: 22px auto 0; border: 2px solid var(--ink); aspect-ratio: 1;
 }
 #board.show { display: grid; }
-.sq { display: grid; place-items: center; font-size: clamp(22px, 8vw, 36px); line-height: 1; position: relative; }
+/* min-width/min-height 0 + overflow hidden stop a piece glyph from stretching its square */
+.sq { display: grid; place-items: center; font-size: clamp(22px, 8vw, 36px); line-height: 1;
+      position: relative; min-width: 0; min-height: 0; overflow: hidden; aspect-ratio: 1; }
 .sq.l { background: var(--sq-light); } .sq.d { background: var(--sq-dark); }
 .sq .w { color: #fff; text-shadow: 0 0 2px #000, 0 0 1px #000; }
 .sq .b { color: #111; }
