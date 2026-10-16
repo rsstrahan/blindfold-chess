@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Blindfold Puzzles</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Bitter:wght@500;700&display=swap" rel="stylesheet">
+<!-- chess.js handles all the chess rules: legal moves, check, checkmate -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<style>
+/* ============================================================
+   COLOR TOKENS
+   Light = pale sage tabletop, Dark = club-room felt green.
+   ============================================================ */
+:root {
+  --bg: #E6ECE8;
+  --surface: #F4F7F5;
+  --ink: #1C3530;
+  --ink-soft: #4B625C;
+  --brass: #8A6A12;
+  --good: #2F6B3A;
+  --bad: #9A3B2E;
+  --sq-light: #E9DCC1;
+  --sq-dark: #9C7A55;
+  --line: #C6D2CC;
+  color-scheme: light;
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15302A; --surface: #1D3B34; --ink: #EDEAE0; --ink-soft: #A9B9B2;
+    --brass: #D4AE3C; --good: #7FC48A; --bad: #E58A7A;
+    --sq-light: #CDBB97; --sq-dark: #7A5C3E; --line: #2E5048;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #15302A; --surface: #1D3B34; --ink: #EDEAE0; --ink-soft: #A9B9B2;
+  --brass: #D4AE3C; --good: #7FC48A; --bad: #E58A7A;
+  --sq-light: #CDBB97; --sq-dark: #7A5C3E; --line: #2E5048;
+  color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: inherit; }
+html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: "Atkinson Hyperlegible", system-ui, sans-serif;
+  font-size: 17px; line-height: 1.5;
+}
+main { max-width: 480px; margin: 0 auto; padding: 20px 18px 40px; }
+
+/* ---------- Header: puzzle number + running stats ---------- */
+header { display: flex; justify-content: space-between; align-items: baseline; }
+h1 { font-family: "Bitter", Georgia, serif; font-weight: 700; font-size: 1.5rem; margin: 0; }
+.stats { color: var(--ink-soft); font-size: .9rem; text-align: right; }
+
+/* ---------- The one bold element: the big speak button ---------- */
+.stage { display: grid; place-items: center; padding: 34px 0 18px; }
+#mic {
+  width: 168px; height: 168px; border-radius: 50%;
+  border: 3px solid var(--brass); background: var(--surface); color: var(--ink);
+  font: 700 1.15rem "Bitter", Georgia, serif; cursor: pointer; position: relative;
+}
+#mic:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid var(--brass); outline-offset: 3px; }
+#mic.listening { background: var(--brass); color: var(--surface); }
+#mic.listening::after {
+  content: ""; position: absolute; inset: -12px; border-radius: 50%;
+  border: 2px solid var(--brass); animation: pulse 1.2s ease-out infinite;
+}
+@keyframes pulse { from { transform: scale(.92); opacity: 1; } to { transform: scale(1.12); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { #mic.listening::after { animation: none; } }
+
+/* ---------- Feedback text ---------- */
+#heard { min-height: 1.5em; color: var(--ink-soft); text-align: center; margin: 4px 0 0; }
+#feedback { min-height: 3em; text-align: center; font-size: 1.1rem; margin: 6px 0 18px; }
+#feedback.good { color: var(--good); font-weight: 700; }
+#feedback.bad { color: var(--bad); }
+
+/* ---------- Control buttons ---------- */
+.controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.controls button, form button {
+  font: 700 .95rem "Atkinson Hyperlegible", sans-serif; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 4px; cursor: pointer;
+}
+
+/* ---------- Typed fallback ---------- */
+form { display: flex; gap: 8px; margin-top: 18px; }
+form input {
+  flex: 1; min-width: 0; font: inherit; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+}
+form button { padding: 10px 16px; }
+.hint { color: var(--ink-soft); font-size: .88rem; margin-top: 10px; }
+
+/* ---------- Peek board (hidden unless peeking) ---------- */
+#board {
+  display: none; grid-template-columns: repeat(8, 1fr); width: 100%; max-width: 360px;
+  margin: 22px auto 0; border: 2px solid var(--ink); aspect-ratio: 1;
+}
+#board.show { display: grid; }
+.sq { display: grid; place-items: center; font-size: clamp(22px, 8vw, 36px); line-height: 1; position: relative; }
+.sq.l { background: var(--sq-light); } .sq.d { background: var(--sq-dark); }
+.sq .w { color: #fff; text-shadow: 0 0 2px #000, 0 0 1px #000; }
+.sq .b { color: #111; }
+.sq small { position: absolute; left: 2px; bottom: 0; font-size: 9px; color: #3a2a1a; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">Puzzle 1</h1>
+    <div class="stats" id="stats"></div>
+  </header>
+
+  <div class="stage">
+    <button id="mic" aria-live="polite">Tap to speak</button>
+  </div>
+  <p id="heard"></p>
+  <p id="feedback" aria-live="polite">Tap “Repeat” to hear the position.</p>
+
+  <div class="controls">
+    <button id="btnRepeat">Repeat</button>
+    <button id="btnPeek">Peek</button>
+    <button id="btnSolution">Answer</button>
+    <button id="btnNext">Next</button>
+  </div>
+
+  <div id="board" aria-label="Board"></div>
+
+  <form id="typed">
+    <input id="typedInput" placeholder="Or type: knight f7, Ra8, repeat…" autocomplete="off">
+    <button type="submit">Send</button>
+  </form>
+  <p class="hint">Say a move (“rook to a8”), or ask “what’s on f7?” or “where is the black king?”</p>
+</main>
+
+<script>
+/* ============================================================
+   SECTION 1: PUZZLES
+   Each is a FEN string (the standard way to write a position).
+   All are mate-in-one, sorted by piece count.
+   ANY move that delivers mate counts as correct — we don't
+   store a single "right" answer.
+   ============================================================ */
+const PUZZLES = [
+  "7k/8/6K1/8/8/8/8/Q7 w - - 0 1",            // 3 pieces
+  "7k/R7/8/8/8/8/8/1R4K1 w - - 0 1",          // 4 pieces
+  "6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1",        // 6 pieces, back rank
+  "6rk/6pp/8/6N1/8/8/8/1K6 w - - 0 1",        // 6 pieces, smothered
+  "5rk1/5pp1/8/7Q/8/3B4/8/6K1 w - - 0 1",     // 7 pieces
+  "6k1/5p1p/5Qp1/8/3B4/8/8/6K1 w - - 0 1"     // 7 pieces
+];
+
+/* ============================================================
+   SECTION 2: SAVED PROGRESS (stays on this device only)
+   ============================================================ */
+const SAVE_KEY = "blindfold-progress-v1";
+function loadProgress() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) { /* storage unavailable: start fresh */ }
+  return { index: 0, solved: 0, peeks: 0, attempts: 0 };
+}
+function saveProgress() {
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(progress)); } catch (e) {}
+}
+let progress = loadProgress();
+
+/* ============================================================
+   SECTION 3: GAME STATE for the current puzzle
+   ============================================================ */
+let game;            // chess.js object for this puzzle
+let wrongTries = 0;  // wrong attempts on this puzzle
+let solved = false;  // stop accepting moves once solved
+
+const NAMES  = { k: "king", q: "queen", r: "rook", b: "bishop", n: "knight", p: "pawn" };
+const ORDER  = ["k", "q", "r", "b", "n", "p"];   // order pieces are read aloud
+
+function loadPuzzle() {
+  const i = progress.index % PUZZLES.length;
+  game = new Chess(PUZZLES[i]);
+  wrongTries = 0; solved = false;
+  $("title").textContent = "Puzzle " + (i + 1) + " of " + PUZZLES.length;
+  hideBoard();
+  updateStats();
+}
+
+/* ============================================================
+   SECTION 4: DESCRIBING THE POSITION IN WORDS
+   e.g. "White to move. White: king on G 1, rook on A 1. Black: ..."
+   Squares are spaced ("G 1") so text-to-speech says letter + number.
+   ============================================================ */
+function sq(s) { return s[0].toUpperCase() + " " + s[1]; }
+
+// Collect every piece as {color, type, square}
+function allPieces() {
+  const list = [], files = "abcdefgh";
+  game.board().forEach((row, r) => row.forEach((p, c) => {
+    if (p) list.push({ color: p.color, type: p.type, square: files[c] + (8 - r) });
+  }));
+  return list;
+}
+
+// Join a list as "a, b, and c"
+function joinList(a) {
+  if (a.length <= 1) return a.join("");
+  return a.slice(0, -1).join(", ") + " and " + a[a.length - 1];
+}
+
+function describeSide(color) {
+  const mine = allPieces().filter(p => p.color === color);
+  const parts = [];
+  ORDER.forEach(t => {
+    const squares = mine.filter(p => p.type === t).map(p => sq(p.square));
+    if (!squares.length) return;
+    const name = NAMES[t] + (squares.length > 1 ? "s" : "");
+    parts.push(name + " on " + joinList(squares));
+  });
+  return parts.join(". ");
+}
+
+function describePosition() {
+  const side = game.turn() === "w" ? "White" : "Black";
+  return side + " to move, mate in one. White: " + describeSide("w") +
+         ". Black: " + describeSide("b") + ".";
+}
+
+/* ============================================================
+   SECTION 5: TEXT-TO-SPEECH
+   ============================================================ */
+// Pick an English voice once the phone has loaded its voice list
+let voice = null;
+function pickVoice() {
+  if (!("speechSynthesis" in window)) return;
+  const voices = speechSynthesis.getVoices();
+  voice = voices.find(v => v.lang === "en-US") || voices.find(v => v.lang.startsWith("en")) || voices[0] || null;
+}
+if ("speechSynthesis" in window) {
+  pickVoice();
+  speechSynthesis.onvoiceschanged = pickVoice;   // Android loads voices late
+}
+
+function say(text) {
+  // No speech engine at all (common inside in-app browsers)
+  if (!("speechSynthesis" in window)) {
+    $("heard").textContent = "Audio isn't available in this browser. Open the link in Chrome.";
+    return;
+  }
+  if (!voice) pickVoice();
+  if (!voice) {
+    $("heard").textContent = "No speech voices found. Check that Google text-to-speech is installed.";
+  }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  if (voice) { u.voice = voice; u.lang = voice.lang; }
+  u.rate = 0.92;
+  u.onerror = e => { $("heard").textContent = "Speech error: " + e.error; };
+  // Small delay: on Android Chrome, speaking right after cancel() can be silently dropped
+  setTimeout(() => speechSynthesis.speak(u), 120);
+}
+
+/* ============================================================
+   SECTION 6: UNDERSTANDING WHAT WAS SAID
+   Step A: normalize words (speech engines mishear chess terms)
+   Step B: pull out piece / squares / command words
+   Step C: match against the short list of LEGAL moves
+   ============================================================ */
+
+// Step A: word -> token. Covers mishearings + NATO phonetics.
+const WORD_MAP = {
+  // pieces
+  knight: "N", night: "N", nite: "N", knights: "N", horse: "N",
+  bishop: "B", bishops: "B",
+  rook: "R", rock: "R", brook: "R", ruk: "R", rooks: "R", castle_piece: "R",
+  queen: "Q", queens: "Q",
+  king: "K", kings: "K",
+  pawn: "P", pawns: "P", pond: "P", pon: "P",
+  // files (letters)
+  alpha: "a", bravo: "b", charlie: "c", delta: "d", echo: "e", foxtrot: "f", golf: "g", hotel: "h",
+  be: "b", bee: "b", see: "c", sea: "c", si: "c", dee: "d", ee: "e", ef: "f", eff: "f",
+  gee: "g", ji: "g", age: "h", aitch: "h", each: "h",
+  // ranks (numbers)
+  one: "1", won: "1", two: "2", three: "3", four: "4", for: "4", fore: "4",
+  five: "5", six: "6", seven: "7", eight: "8", ate: "8",
+  // colors (for "where is" questions)
+  white: "W", black: "BL",
+  // single-letter piece abbreviations from typed notation ("Ra8" -> "r a 8")
+  n: "N", r: "R", q: "Q", k: "K"
+};
+
+function tokenize(text) {
+  const tokens = [];
+  // split "a8", "f7" etc. into letter + digit; strip punctuation
+  const words = text.toLowerCase().replace(/[^a-z0-9\s]/g, " ")
+                    .replace(/\b([nrqk])x?([a-h][1-8])/g, "$1 $2")   // "Ra8"/"Nxf7" -> "r a8"
+                    .replace(/([a-h])([1-8])/g, "$1 $2").split(/\s+/).filter(Boolean);
+  words.forEach(w => {
+    if (WORD_MAP[w]) tokens.push(WORD_MAP[w]);
+    else if (/^[a-h]$/.test(w) || /^[1-8]$/.test(w)) tokens.push(w);
+    else tokens.push("_" + w);   // other words kept with "_" so commands can see them
+  });
+  return tokens;
+}
+
+// Step B: find squares = a file letter followed by a rank digit
+function findSquares(tokens) {
+  const squares = [];
+  for (let i = 0; i < tokens.length - 1; i++) {
+    if (/^[a-h]$/.test(tokens[i]) && /^[1-8]$/.test(tokens[i + 1])) {
+      squares.push(tokens[i] + tokens[i + 1]); i++;
+    }
+  }
+  return squares;
+}
+
+function findPiece(tokens) {
+  return tokens.find(t => ["N", "B", "R", "Q", "K", "P"].includes(t)) || null;
+}
+
+// Step C: pick the legal move that best fits what was heard.
+// Returns {move} or {error: "..."}
+function matchMove(text) {
+  const raw = text.trim();
+  const legal = game.moves({ verbose: true });
+
+  // 1) Exact notation typed or heard ("Ra8", "Nf7#", "e4")
+  const direct = legal.find(m => m.san.replace(/[+#]/g, "").toLowerCase() === raw.replace(/[+#\s]/g, "").toLowerCase());
+  if (direct) return { move: direct };
+
+  const tokens = tokenize(raw);
+  const words  = tokens.filter(t => t[0] === "_").map(t => t.slice(1));
+
+  // 2) Castling
+  if (words.some(w => w.startsWith("castle"))) {
+    const long = words.includes("long") || words.includes("queenside");
+    const m = legal.find(x => x.san.startsWith(long ? "O-O-O" : "O-O") && (long || !x.san.startsWith("O-O-O")));
+    return m ? { move: m } : { error: "Castling isn't legal here." };
+  }
+
+  // 3) Piece + destination (+ optional starting square)
+  const squares = findSquares(tokens);
+  if (!squares.length) return { error: "I didn't catch a square." };
+  const to   = squares[squares.length - 1];          // last square said = destination
+  const from = squares.length > 1 ? squares[0] : null;
+  const piece = findPiece(tokens);
+
+  let options = legal.filter(m => m.to === to);
+  if (from)  options = options.filter(m => m.from === from);
+  if (piece) options = options.filter(m => m.piece === piece.toLowerCase());
+  else if (options.length > 1) {
+    // No piece named: chess convention says a bare square means a pawn move
+    const pawnOnly = options.filter(m => m.piece === "p");
+    if (pawnOnly.length) options = pawnOnly;
+  }
+  // Promotions: default to queen
+  if (options.length > 1 && options.every(m => m.promotion)) options = options.filter(m => m.promotion === "q");
+
+  if (options.length === 1) return { move: options[0] };
+  if (options.length === 0) return { error: "No legal move" + (piece ? " for a " + NAMES[piece.toLowerCase()] : "") + " to " + sq(to) + "." };
+  return { error: "More than one piece can go to " + sq(to) + ". Say which, like “" +
+           NAMES[options[0].piece] + " " + sq(options[0].from) + " to " + sq(to) + "”." };
+}
+
+/* ============================================================
+   SECTION 7: QUESTIONS AND COMMANDS (non-move speech)
+   Returns true if the text was handled as a command.
+   ============================================================ */
+function handleCommand(text) {
+  const tokens = tokenize(text);
+  const words = tokens.filter(t => t[0] === "_").map(t => t.slice(1));
+  const has = w => words.includes(w);
+
+  if (has("repeat") || has("again") || has("position")) { speakPosition(); return true; }
+  if (has("peek") || has("show") || (has("board") && !has("where"))) { togglePeek(); return true; }
+  if (has("answer") || has("solution") || has("give")) { revealAnswer(); return true; }
+  if (has("next") || has("skip")) { nextPuzzle(); return true; }
+
+  // "What's on f7?" / "What is on f7?"
+  if (has("what") || has("whats")) {
+    const s = findSquares(tokens)[0];
+    if (s) {
+      const p = game.get(s);
+      reply(p ? sq(s) + " has a " + (p.color === "w" ? "white " : "black ") + NAMES[p.type] + "." : sq(s) + " is empty.");
+      return true;
+    }
+  }
+  // "Where is the black king?" / "Where are the white pawns?"
+  if (has("where")) {
+    const piece = findPiece(tokens);
+    if (piece) {
+      const color = tokens.includes("BL") ? "b" : tokens.includes("W") ? "w" : null;
+      const type = piece.toLowerCase();
+      const found = allPieces().filter(p => p.type === type && (!color || p.color === color));
+      const colorWord = c => (c === "w" ? "white" : "black");
+      if (!found.length) {
+        reply("There's no " + (color ? colorWord(color) + " " : "") + NAMES[type] + " on the board.");
+      } else if (color) {
+        // Color given: "The black king is on H 8."
+        reply("The " + colorWord(color) + " " + NAMES[type] + (found.length > 1 ? "s are on " : " is on ") +
+              joinList(found.map(p => sq(p.square))) + ".");
+      } else {
+        // No color given: list each one with its color
+        reply(capitalize(joinList(found.map(p => "a " + colorWord(p.color) + " " + NAMES[type] + " on " + sq(p.square)))) + ".");
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+/* ============================================================
+   SECTION 8: CHECKING AN ANSWER
+   ============================================================ */
+function tryMove(text) {
+  if (solved) { reply("Already solved. Say “next” for the next puzzle."); return; }
+  const result = matchMove(text);
+  if (result.error) { reply(result.error, "bad"); return; }
+
+  const m = result.move;
+  progress.attempts++;
+  game.move(m.san);
+  const mate = game.in_checkmate();
+  const spoken = NAMES[m.piece] + " to " + sq(m.to);
+
+  if (mate) {
+    solved = true; progress.solved++; progress.index++;
+    saveProgress(); updateStats();
+    reply(capitalize(spoken) + ". Checkmate, well done. Say “next” to continue.", "good");
+  } else {
+    game.undo();             // put the position back
+    wrongTries++;
+    saveProgress(); updateStats();
+    const extra = wrongTries >= 3 ? " Say “answer” if you want the solution." : " Try again.";
+    reply(capitalize(spoken) + " is legal, but it isn't mate." + extra, "bad");
+  }
+}
+
+/* ============================================================
+   SECTION 9: BUTTON ACTIONS
+   ============================================================ */
+function speakPosition() { const t = describePosition(); setFeedback(t); say(t); }
+
+function revealAnswer() {
+  const mates = game.moves({ verbose: true }).filter(m => { game.move(m.san); const r = game.in_checkmate(); game.undo(); return r; });
+  const text = "Mate with " + joinList(mates.map(m => NAMES[m.piece] + " to " + sq(m.to))) + ".";
+  if (!solved) { solved = true; progress.index++; saveProgress(); }
+  reply(text + " Say “next” to continue.");
+}
+
+function nextPuzzle() {
+  if (!solved) { progress.index++; saveProgress(); }
+  loadPuzzle(); speakPosition();
+}
+
+function togglePeek() {
+  const b = $("board");
+  if (b.classList.contains("show")) { hideBoard(); return; }
+  progress.peeks++; saveProgress(); updateStats();
+  drawBoard(); b.classList.add("show");
+}
+function hideBoard() { $("board").classList.remove("show"); }
+
+/* ============================================================
+   SECTION 10: DRAWING THE PEEK BOARD
+   ============================================================ */
+const GLYPH = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
+function drawBoard() {
+  const b = $("board"); b.innerHTML = "";
+  game.board().forEach((row, r) => row.forEach((p, c) => {
+    const d = document.createElement("div");
+    d.className = "sq " + ((r + c) % 2 ? "d" : "l");
+    if (p) d.innerHTML = '<span class="' + p.color + '">' + GLYPH[p.type] + "</span>";
+    if (c === 0) d.innerHTML += "<small>" + (8 - r) + "</small>";   // rank labels on the left edge
+    b.appendChild(d);
+  }));
+}
+
+/* ============================================================
+   SECTION 11: SPEECH RECOGNITION (push-to-talk)
+   Sends up to 5 guesses from the recognizer; the first one that
+   makes sense as a command or a legal move wins.
+   ============================================================ */
+const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, listening = false;
+
+if (Rec) {
+  rec = new Rec();
+  rec.lang = "en-US"; rec.interimResults = false; rec.maxAlternatives = 5;
+  rec.onresult = e => {
+    const guesses = Array.from(e.results[0]).map(a => a.transcript);
+    $("heard").textContent = "Heard: “" + guesses[0] + "”";
+    handleInput(guesses);
+  };
+  rec.onerror = e => {
+    // Show the exact error code so problems can be diagnosed
+    if (e.error === "not-allowed" || e.error === "service-not-allowed")
+      reply("Microphone permission was refused (" + e.error + "). Use the typed box below for now.", "bad");
+    else if (e.error === "audio-capture")
+      reply("No microphone was found.", "bad");
+    else if (e.error !== "no-speech" && e.error !== "aborted")
+      reply("Voice input error: " + e.error, "bad");
+  };
+  rec.onend = () => { listening = false; $("mic").classList.remove("listening"); $("mic").textContent = "Tap to speak"; };
+}
+
+$("mic").onclick = () => {
+  if (!rec) { reply("Voice input isn't supported in this browser. Use the typed box below.", "bad"); return; }
+  if (listening) { rec.stop(); return; }
+  if ("speechSynthesis" in window) speechSynthesis.cancel();   // stop talking before listening
+  try { rec.start(); listening = true; $("mic").classList.add("listening"); $("mic").textContent = "Listening…"; }
+  catch (e) { /* already started */ }
+};
+
+/* ============================================================
+   SECTION 12: ROUTING INPUT (voice guesses or typed text)
+   ============================================================ */
+function handleInput(guesses) {
+  // Prefer the first guess that is a command, then the first that parses as a legal move
+  for (const g of guesses) if (handleCommand(g)) return;
+  for (const g of guesses) if (!matchMove(g).error) { tryMove(g); return; }
+  tryMove(guesses[0]);   // nothing fit: report the error for the top guess
+}
+
+$("typed").onsubmit = e => {
+  e.preventDefault();
+  const v = $("typedInput").value.trim();
+  if (!v) return;
+  $("heard").textContent = "Typed: “" + v + "”";
+  $("typedInput").value = "";
+  handleInput([v]);
+};
+$("btnRepeat").onclick = speakPosition;
+$("btnPeek").onclick = togglePeek;
+$("btnSolution").onclick = revealAnswer;
+$("btnNext").onclick = nextPuzzle;
+
+/* ============================================================
+   SECTION 13: SMALL HELPERS
+   ============================================================ */
+function $(id) { return document.getElementById(id); }
+function capitalize(s) { return s[0].toUpperCase() + s.slice(1); }
+function setFeedback(text, cls) { const f = $("feedback"); f.textContent = text; f.className = cls || ""; }
+function reply(text, cls) { setFeedback(text, cls); say(text); }
+function updateStats() {
+  $("stats").textContent = progress.solved + " solved, " + progress.peeks + " peeks";
+}
+
+loadPuzzle();
+</script>
+</body>
+</html>
