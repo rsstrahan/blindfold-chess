@@ -81,7 +81,7 @@ h1 { font-family: "Bitter", Georgia, serif; font-weight: 700; font-size: 1.5rem;
 #feedback.bad { color: var(--bad); }
 
 /* ---------- Control buttons ---------- */
-.controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.controls { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
 .controls button, form button {
   font: 700 .95rem "Atkinson Hyperlegible", sans-serif; color: var(--ink);
   background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
@@ -112,6 +112,24 @@ form button { padding: 10px 16px; }
 .sq .w { color: #fff; text-shadow: 0 0 2px #000, 0 0 1px #000; }
 .sq .b { color: #111; }
 .sq small { position: absolute; left: 2px; bottom: 0; font-size: 9px; color: #3a2a1a; }
+
+/* ---------- Mode switch: Practice / Daily ---------- */
+.modes { display: grid; grid-template-columns: 1fr 1fr; gap: 0; margin: 16px 0 0;
+         border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.modes button { font: 700 .95rem "Atkinson Hyperlegible", sans-serif; padding: 10px; border: 0;
+                background: var(--surface); color: var(--ink-soft); cursor: pointer; }
+.modes button.on { background: var(--brass); color: var(--surface); }
+
+/* ---------- Daily panel: today's status + make-up days ---------- */
+#daily { display: none; margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line);
+         border-radius: 12px; background: var(--surface); }
+#daily.show { display: block; }
+#daily p { margin: 0 0 8px; }
+.makeups { display: flex; flex-wrap: wrap; gap: 6px; }
+.makeups button { font: 700 .85rem "Atkinson Hyperlegible", sans-serif; padding: 8px 10px; border-radius: 8px;
+                  border: 1px dashed var(--brass); background: transparent; color: var(--ink); cursor: pointer; }
+.score { color: var(--brass); font-weight: 700; }
+.hidden { display: none !important; }
 </style>
 </head>
 <body>
@@ -121,6 +139,16 @@ form button { padding: 10px 16px; }
     <div class="stats" id="stats"></div>
   </header>
 
+  <!-- Practice = work through the puzzle list. Daily = one puzzle per day, keeps the streak -->
+  <div class="modes">
+    <button id="modePractice" class="on">Practice</button>
+    <button id="modeDaily">Daily</button>
+  </div>
+  <div id="daily">
+    <p id="dailyStatus"></p>
+    <div class="makeups" id="makeups"></div>
+  </div>
+
   <div class="stage">
     <button id="mic" aria-live="polite">Tap to speak</button>
   </div>
@@ -128,6 +156,7 @@ form button { padding: 10px 16px; }
   <p id="feedback" aria-live="polite">Tap “Repeat” to hear the position.</p>
 
   <div class="controls">
+    <button id="btnPrev">Back</button>
     <button id="btnRepeat">Repeat</button>
     <button id="btnPeek">Peek</button>
     <button id="btnSolution">Answer</button>
@@ -140,7 +169,7 @@ form button { padding: 10px 16px; }
     <input id="typedInput" placeholder="Or type: knight f7, Ra8, repeat…" autocomplete="off">
     <button type="submit">Send</button>
   </form>
-  <p class="hint">Say a move (“rook to a8”), or ask “what’s on f7?” or “where is the black king?”</p>
+  <p class="hint">Say a move (“rook to a8”), or ask “what’s on f7?” or “where is the black king?” Say “daily” or “practice” to switch modes.</p>
 </main>
 
 <script>
@@ -148,8 +177,7 @@ form button { padding: 10px 16px; }
    SECTION 1: PUZZLES
    Each is a FEN string (the standard way to write a position).
    All are mate-in-one, sorted by piece count.
-   ANY move that delivers mate counts as correct — we don't
-   store a single "right" answer.
+   ANY move that delivers mate counts as correct.
    ============================================================ */
 const PUZZLES = [
   "7k/8/6K1/8/8/8/8/Q7 w - - 0 1",            // 3 pieces
@@ -161,48 +189,138 @@ const PUZZLES = [
 ];
 
 /* ============================================================
-   SECTION 2: SAVED PROGRESS (stays on this device only)
+   SECTION 2: SCORING RULES (all in one place so they're easy to tune)
+   Points only ever go UP. A miss earns less, never costs anything.
+   ============================================================ */
+const POINTS = {
+  firstTry: 10,      // solved with no wrong moves
+  fewTries: 6,       // solved after 1–2 wrong moves
+  manyTries: 3,      // solved after 3+ wrong moves
+  noPeekBonus: 5,    // didn't look at the board
+  dailyBonus: 5      // extra for the daily puzzle (today or a make-up day)
+};
+const FREEZE_EVERY = 5;   // earn a streak freeze every 5 new practice solves
+const FREEZE_MAX = 2;     // can hold at most this many
+const MAKEUP_WINDOW = 7;  // missed days can be made up within this many days
+
+/* ============================================================
+   SECTION 3: SAVED PROGRESS (stays on this device only)
+   days = { "2026-10-16": "solved" | "madeup" | "freeze" }
    ============================================================ */
 const SAVE_KEY = "blindfold-progress-v1";
 function loadProgress() {
-  try {
-    const raw = localStorage.getItem(SAVE_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch (e) { /* storage unavailable: start fresh */ }
-  return { index: 0, solved: 0, peeks: 0, attempts: 0 };
+  let p = null;
+  try { const raw = localStorage.getItem(SAVE_KEY); if (raw) p = JSON.parse(raw); } catch (e) {}
+  p = p || {};
+  // Fill in anything missing (also upgrades older saves)
+  const defaults = { index: 0, peeks: 0, attempts: 0, solvedIds: [], points: 0,
+                     freezes: 0, practiceSolves: 0, days: {}, startDay: todayKey() };
+  for (const k in defaults) if (p[k] === undefined) p[k] = defaults[k];
+  return p;
 }
 function saveProgress() {
   try { localStorage.setItem(SAVE_KEY, JSON.stringify(progress)); } catch (e) {}
 }
-let progress = loadProgress();
 
 /* ============================================================
-   SECTION 3: GAME STATE for the current puzzle
+   SECTION 4: DATES (local time, written as "YYYY-MM-DD")
    ============================================================ */
-let game;            // chess.js object for this puzzle
-let wrongTries = 0;  // wrong attempts on this puzzle
-let solved = false;  // stop accepting moves once solved
-
-const NAMES  = { k: "king", q: "queen", r: "rook", b: "bishop", n: "knight", p: "pawn" };
-const ORDER  = ["k", "q", "r", "b", "n", "p"];   // order pieces are read aloud
-
-function loadPuzzle() {
-  const i = progress.index % PUZZLES.length;
-  game = new Chess(PUZZLES[i]);
-  wrongTries = 0; solved = false;
-  $("title").textContent = "Puzzle " + (i + 1) + " of " + PUZZLES.length;
-  hideBoard();
-  updateStats();
+function dayKey(d) {
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+function todayKey() { return dayKey(new Date()); }
+function addDays(key, n) {
+  const [y, m, d] = key.split("-").map(Number);
+  return dayKey(new Date(y, m - 1, d + n));
+}
+function prettyDay(key) {
+  const [y, m, d] = key.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+// Same date -> same puzzle, so the daily is consistent with no server
+function dailyIndex(key) {
+  const [y, m, d] = key.split("-").map(Number);
+  const dayNumber = Math.floor(Date.UTC(y, m - 1, d) / 86400000);
+  return (dayNumber * 7 + 3) % PUZZLES.length;
 }
 
 /* ============================================================
-   SECTION 4: DESCRIBING THE POSITION IN WORDS
-   e.g. "White to move. White: king on G 1, rook on A 1. Black: ..."
+   SECTION 5: STREAKS AND FREEZES
+   ============================================================ */
+const covered = key => !!progress.days[key];
+
+// Streak = consecutive covered days ending today (or yesterday, if today isn't done yet)
+function currentStreak() {
+  let d = covered(todayKey()) ? todayKey() : addDays(todayKey(), -1);
+  let n = 0;
+  while (covered(d)) { n++; d = addDays(d, -1); }
+  return n;
+}
+
+// On opening the app: if there's a gap right before today that would break
+// a streak, and there are enough freezes to cover it, spend them automatically.
+function applyFreezes() {
+  const gap = [];
+  let d = addDays(todayKey(), -1);
+  let streakBehindGap = false;
+  for (let i = 0; i < MAKEUP_WINDOW; i++) {
+    if (d < progress.startDay) break;               // before the user started
+    if (covered(d)) { streakBehindGap = true; break; }
+    gap.push(d);
+    d = addDays(d, -1);
+  }
+  if (gap.length && streakBehindGap && gap.length <= progress.freezes) {
+    gap.forEach(k => progress.days[k] = "freeze");
+    progress.freezes -= gap.length;
+    saveProgress();
+  }
+}
+
+// Missed days still inside the make-up window (newest first)
+function missedDays() {
+  const list = [];
+  for (let i = 1; i <= MAKEUP_WINDOW; i++) {
+    const k = addDays(todayKey(), -i);
+    if (k < progress.startDay) break;
+    if (!covered(k)) list.push(k);
+  }
+  return list;
+}
+
+/* ============================================================
+   SECTION 6: STATE for the current puzzle
+   ============================================================ */
+let progress = loadProgress();
+let mode = "practice";      // "practice" or "daily"
+let dailyDate = todayKey(); // which day's puzzle is being played in daily mode
+let game;                   // chess.js object for this puzzle
+let current = 0;            // which puzzle (0-based) is on screen
+let wrongTries = 0;         // wrong attempts on this puzzle
+let peekedThis = false;     // looked at the board during this puzzle?
+let revealed = false;       // asked for the answer? (then it's worth 0 points)
+let solved = false;         // stop accepting moves once solved
+
+const NAMES = { k: "king", q: "queen", r: "rook", b: "bishop", n: "knight", p: "pawn" };
+const ORDER = ["k", "q", "r", "b", "n", "p"];   // order pieces are read aloud
+
+function loadPuzzle() {
+  current = mode === "daily" ? dailyIndex(dailyDate) : progress.index % PUZZLES.length;
+  game = new Chess(PUZZLES[current]);
+  wrongTries = 0; peekedThis = false; revealed = false; solved = false;
+  $("title").textContent = mode === "daily"
+    ? "Daily · " + prettyDay(dailyDate)
+    : "Puzzle " + (current + 1) + " of " + PUZZLES.length;
+  hideBoard();
+  updateStats();
+  updateDailyPanel();
+}
+
+/* ============================================================
+   SECTION 7: DESCRIBING THE POSITION IN WORDS
    Squares are spaced ("G 1") so text-to-speech says letter + number.
    ============================================================ */
 function sq(s) { return s[0].toUpperCase() + " " + s[1]; }
 
-// Collect every piece as {color, type, square}
 function allPieces() {
   const list = [], files = "abcdefgh";
   game.board().forEach((row, r) => row.forEach((p, c) => {
@@ -211,7 +329,6 @@ function allPieces() {
   return list;
 }
 
-// Join a list as "a, b, and c"
 function joinList(a) {
   if (a.length <= 1) return a.join("");
   return a.slice(0, -1).join(", ") + " and " + a[a.length - 1];
@@ -223,43 +340,31 @@ function describeSide(color) {
   ORDER.forEach(t => {
     const squares = mine.filter(p => p.type === t).map(p => sq(p.square));
     if (!squares.length) return;
-    const name = NAMES[t] + (squares.length > 1 ? "s" : "");
-    parts.push(name + " on " + joinList(squares));
+    parts.push(NAMES[t] + (squares.length > 1 ? "s" : "") + " on " + joinList(squares));
   });
   return parts.join(". ");
 }
 
 function describePosition() {
   const side = game.turn() === "w" ? "White" : "Black";
-  return side + " to move, mate in one. White: " + describeSide("w") +
-         ". Black: " + describeSide("b") + ".";
+  return side + " to move, mate in one. White: " + describeSide("w") + ". Black: " + describeSide("b") + ".";
 }
 
 /* ============================================================
-   SECTION 5: TEXT-TO-SPEECH
+   SECTION 8: TEXT-TO-SPEECH
    ============================================================ */
-// Pick an English voice once the phone has loaded its voice list
 let voice = null;
 function pickVoice() {
   if (!("speechSynthesis" in window)) return;
   const voices = speechSynthesis.getVoices();
   voice = voices.find(v => v.lang === "en-US") || voices.find(v => v.lang.startsWith("en")) || voices[0] || null;
 }
-if ("speechSynthesis" in window) {
-  pickVoice();
-  speechSynthesis.onvoiceschanged = pickVoice;   // Android loads voices late
-}
+if ("speechSynthesis" in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
 
 function say(text) {
-  // No speech engine at all (common inside in-app browsers)
-  if (!("speechSynthesis" in window)) {
-    $("heard").textContent = "Audio isn't available in this browser. Open the link in Chrome.";
-    return;
-  }
+  if (!("speechSynthesis" in window)) { $("heard").textContent = "Audio isn't available in this browser. Open the link in Chrome."; return; }
   if (!voice) pickVoice();
-  if (!voice) {
-    $("heard").textContent = "No speech voices found. Check that Google text-to-speech is installed.";
-  }
+  if (!voice) $("heard").textContent = "No speech voices found. Check that Google text-to-speech is installed.";
   speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
   if (voice) { u.voice = voice; u.lang = voice.lang; }
@@ -270,22 +375,20 @@ function say(text) {
 }
 
 /* ============================================================
-   SECTION 6: UNDERSTANDING WHAT WAS SAID
+   SECTION 9: UNDERSTANDING WHAT WAS SAID
    Step A: normalize words (speech engines mishear chess terms)
    Step B: pull out piece / squares / command words
    Step C: match against the short list of LEGAL moves
    ============================================================ */
-
-// Step A: word -> token. Covers mishearings + NATO phonetics.
 const WORD_MAP = {
   // pieces
   knight: "N", night: "N", nite: "N", knights: "N", horse: "N",
   bishop: "B", bishops: "B",
-  rook: "R", rock: "R", brook: "R", ruk: "R", rooks: "R", castle_piece: "R",
+  rook: "R", rock: "R", brook: "R", ruk: "R", rooks: "R",
   queen: "Q", queens: "Q",
   king: "K", kings: "K",
   pawn: "P", pawns: "P", pond: "P", pon: "P",
-  // files (letters)
+  // files (letters), incl. NATO phonetics
   alpha: "a", bravo: "b", charlie: "c", delta: "d", echo: "e", foxtrot: "f", golf: "g", hotel: "h",
   be: "b", bee: "b", see: "c", sea: "c", si: "c", dee: "d", ee: "e", ef: "f", eff: "f",
   gee: "g", ji: "g", age: "h", aitch: "h", each: "h",
@@ -300,10 +403,10 @@ const WORD_MAP = {
 
 function tokenize(text) {
   const tokens = [];
-  // split "a8", "f7" etc. into letter + digit; strip punctuation
   const words = text.toLowerCase().replace(/[^a-z0-9\s]/g, " ")
                     .replace(/\b([nrqk])x?([a-h][1-8])/g, "$1 $2")   // "Ra8"/"Nxf7" -> "r a8"
-                    .replace(/([a-h])([1-8])/g, "$1 $2").split(/\s+/).filter(Boolean);
+                    .replace(/([a-h])([1-8])/g, "$1 $2")
+                    .split(/\s+/).filter(Boolean);
   words.forEach(w => {
     if (WORD_MAP[w]) tokens.push(WORD_MAP[w]);
     else if (/^[a-h]$/.test(w) || /^[1-8]$/.test(w)) tokens.push(w);
@@ -312,13 +415,10 @@ function tokenize(text) {
   return tokens;
 }
 
-// Step B: find squares = a file letter followed by a rank digit
 function findSquares(tokens) {
   const squares = [];
   for (let i = 0; i < tokens.length - 1; i++) {
-    if (/^[a-h]$/.test(tokens[i]) && /^[1-8]$/.test(tokens[i + 1])) {
-      squares.push(tokens[i] + tokens[i + 1]); i++;
-    }
+    if (/^[a-h]$/.test(tokens[i]) && /^[1-8]$/.test(tokens[i + 1])) { squares.push(tokens[i] + tokens[i + 1]); i++; }
   }
   return squares;
 }
@@ -327,7 +427,6 @@ function findPiece(tokens) {
   return tokens.find(t => ["N", "B", "R", "Q", "K", "P"].includes(t)) || null;
 }
 
-// Step C: pick the legal move that best fits what was heard.
 // Returns {move} or {error: "..."}
 function matchMove(text) {
   const raw = text.trim();
@@ -338,7 +437,7 @@ function matchMove(text) {
   if (direct) return { move: direct };
 
   const tokens = tokenize(raw);
-  const words  = tokens.filter(t => t[0] === "_").map(t => t.slice(1));
+  const words = tokens.filter(t => t[0] === "_").map(t => t.slice(1));
 
   // 2) Castling
   if (words.some(w => w.startsWith("castle"))) {
@@ -350,19 +449,17 @@ function matchMove(text) {
   // 3) Piece + destination (+ optional starting square)
   const squares = findSquares(tokens);
   if (!squares.length) return { error: "I didn't catch a square." };
-  const to   = squares[squares.length - 1];          // last square said = destination
+  const to = squares[squares.length - 1];
   const from = squares.length > 1 ? squares[0] : null;
   const piece = findPiece(tokens);
 
   let options = legal.filter(m => m.to === to);
-  if (from)  options = options.filter(m => m.from === from);
+  if (from) options = options.filter(m => m.from === from);
   if (piece) options = options.filter(m => m.piece === piece.toLowerCase());
   else if (options.length > 1) {
-    // No piece named: chess convention says a bare square means a pawn move
-    const pawnOnly = options.filter(m => m.piece === "p");
+    const pawnOnly = options.filter(m => m.piece === "p");   // bare square = pawn move
     if (pawnOnly.length) options = pawnOnly;
   }
-  // Promotions: default to queen
   if (options.length > 1 && options.every(m => m.promotion)) options = options.filter(m => m.promotion === "q");
 
   if (options.length === 1) return { move: options[0] };
@@ -372,20 +469,22 @@ function matchMove(text) {
 }
 
 /* ============================================================
-   SECTION 7: QUESTIONS AND COMMANDS (non-move speech)
-   Returns true if the text was handled as a command.
+   SECTION 10: QUESTIONS AND COMMANDS (non-move speech)
    ============================================================ */
 function handleCommand(text) {
   const tokens = tokenize(text);
   const words = tokens.filter(t => t[0] === "_").map(t => t.slice(1));
   const has = w => words.includes(w);
 
+  if (has("daily") || has("today")) { setMode("daily"); return true; }
+  if (has("practice")) { setMode("practice"); return true; }
   if (has("repeat") || has("again") || has("position")) { speakPosition(); return true; }
   if (has("peek") || has("show") || (has("board") && !has("where"))) { togglePeek(); return true; }
   if (has("answer") || has("solution") || has("give")) { revealAnswer(); return true; }
   if (has("next") || has("skip")) { nextPuzzle(); return true; }
+  if (has("previous") || has("back")) { prevPuzzle(); return true; }
+  if (has("score") || has("points") || has("streak")) { reply(scoreSummary()); return true; }
 
-  // "What's on f7?" / "What is on f7?"
   if (has("what") || has("whats")) {
     const s = findSquares(tokens)[0];
     if (s) {
@@ -394,7 +493,6 @@ function handleCommand(text) {
       return true;
     }
   }
-  // "Where is the black king?" / "Where are the white pawns?"
   if (has("where")) {
     const piece = findPiece(tokens);
     if (piece) {
@@ -402,16 +500,9 @@ function handleCommand(text) {
       const type = piece.toLowerCase();
       const found = allPieces().filter(p => p.type === type && (!color || p.color === color));
       const colorWord = c => (c === "w" ? "white" : "black");
-      if (!found.length) {
-        reply("There's no " + (color ? colorWord(color) + " " : "") + NAMES[type] + " on the board.");
-      } else if (color) {
-        // Color given: "The black king is on H 8."
-        reply("The " + colorWord(color) + " " + NAMES[type] + (found.length > 1 ? "s are on " : " is on ") +
-              joinList(found.map(p => sq(p.square))) + ".");
-      } else {
-        // No color given: list each one with its color
-        reply(capitalize(joinList(found.map(p => "a " + colorWord(p.color) + " " + NAMES[type] + " on " + sq(p.square)))) + ".");
-      }
+      if (!found.length) reply("There's no " + (color ? colorWord(color) + " " : "") + NAMES[type] + " on the board.");
+      else if (color) reply("The " + colorWord(color) + " " + NAMES[type] + (found.length > 1 ? "s are on " : " is on ") + joinList(found.map(p => sq(p.square))) + ".");
+      else reply(capitalize(joinList(found.map(p => "a " + colorWord(p.color) + " " + NAMES[type] + " on " + sq(p.square)))) + ".");
       return true;
     }
   }
@@ -419,10 +510,19 @@ function handleCommand(text) {
 }
 
 /* ============================================================
-   SECTION 8: CHECKING AN ANSWER
+   SECTION 11: CHECKING AN ANSWER + AWARDING POINTS
    ============================================================ */
+// Points for the puzzle just solved, based on tries and peeks
+function pointsEarned() {
+  if (revealed) return 0;
+  let pts = wrongTries === 0 ? POINTS.firstTry : wrongTries <= 2 ? POINTS.fewTries : POINTS.manyTries;
+  if (!peekedThis) pts += POINTS.noPeekBonus;
+  if (mode === "daily") pts += POINTS.dailyBonus;
+  return pts;
+}
+
 function tryMove(text) {
-  if (solved) { reply("Already solved. Say “next” for the next puzzle."); return; }
+  if (solved) { reply("Already solved. Say “next” to continue."); return; }
   const result = matchMove(text);
   if (result.error) { reply(result.error, "bad"); return; }
 
@@ -430,48 +530,98 @@ function tryMove(text) {
   progress.attempts++;
   game.move(m.san);
   const mate = game.in_checkmate();
-  const spoken = NAMES[m.piece] + " to " + sq(m.to);
+  const spoken = capitalize(NAMES[m.piece] + " to " + sq(m.to));
 
-  if (mate) {
-    solved = true; progress.solved++; progress.index++;
-    saveProgress(); updateStats();
-    reply(capitalize(spoken) + ". Checkmate, well done. Say “next” to continue.", "good");
-  } else {
-    game.undo();             // put the position back
+  if (!mate) {
+    game.undo();   // put the position back
     wrongTries++;
-    saveProgress(); updateStats();
+    saveProgress();
     const extra = wrongTries >= 3 ? " Say “answer” if you want the solution." : " Try again.";
-    reply(capitalize(spoken) + " is legal, but it isn't mate." + extra, "bad");
+    reply(spoken + " is legal, but it isn't mate." + extra, "bad");
+    return;
   }
+
+  solved = true;
+  const msg = mode === "daily" ? finishDaily() : finishPractice();
+  saveProgress(); updateStats(); updateDailyPanel();
+  reply(spoken + ". Checkmate! " + msg, "good");
+}
+
+// Practice: points only the first time a puzzle is solved (no farming)
+function finishPractice() {
+  progress.index = current + 1;
+  if (revealed) return "No points after seeing the answer, but you can come back to it later.";
+  if (progress.solvedIds.includes(current)) return "Practice round, already scored. Say “next” to continue.";
+  const pts = pointsEarned();
+  progress.solvedIds.push(current);
+  progress.points += pts;
+  progress.practiceSolves++;
+  let msg = "Plus " + pts + " points.";
+  if (progress.practiceSolves % FREEZE_EVERY === 0 && progress.freezes < FREEZE_MAX) {
+    progress.freezes++;
+    msg += " You earned a streak freeze!";
+  }
+  return msg + " Say “next” to continue.";
+}
+
+// Daily: counts toward the streak, whether answer was revealed or not
+function finishDaily() {
+  if (progress.days[dailyDate] === "solved" || progress.days[dailyDate] === "madeup") return "This day is already done.";
+  const isToday = dailyDate === todayKey();
+  const pts = pointsEarned();
+  progress.days[dailyDate] = isToday ? "solved" : "madeup";
+  progress.points += pts;
+  return (pts ? "Plus " + pts + " points. " : "") + (isToday ? "Daily done" : "Day made up") +
+         ". Streak: " + currentStreak() + " day" + (currentStreak() === 1 ? "" : "s") + ".";
 }
 
 /* ============================================================
-   SECTION 9: BUTTON ACTIONS
+   SECTION 12: BUTTON ACTIONS
    ============================================================ */
 function speakPosition() { const t = describePosition(); setFeedback(t); say(t); }
 
+// Tells the answer; the user still says the move to finish (for 0 points)
 function revealAnswer() {
   const mates = game.moves({ verbose: true }).filter(m => { game.move(m.san); const r = game.in_checkmate(); game.undo(); return r; });
-  const text = "Mate with " + joinList(mates.map(m => NAMES[m.piece] + " to " + sq(m.to))) + ".";
-  if (!solved) { solved = true; progress.index++; saveProgress(); }
-  reply(text + " Say “next” to continue.");
+  revealed = true;
+  reply("Mate with " + joinList(mates.map(m => NAMES[m.piece] + " to " + sq(m.to))) + ". Say the move to finish.");
 }
 
 function nextPuzzle() {
-  if (!solved) { progress.index++; saveProgress(); }
+  if (mode === "daily") { setMode("practice"); return; }   // in daily mode, Next goes back to practice
+  progress.index = current + 1; saveProgress();
+  loadPuzzle(); speakPosition();
+}
+
+function prevPuzzle() {
+  if (mode === "daily") { setMode("practice"); return; }
+  progress.index = current === 0 ? PUZZLES.length - 1 : current - 1;
+  saveProgress();
   loadPuzzle(); speakPosition();
 }
 
 function togglePeek() {
   const b = $("board");
   if (b.classList.contains("show")) { hideBoard(); return; }
-  progress.peeks++; saveProgress(); updateStats();
+  progress.peeks++; peekedThis = true; saveProgress(); updateStats();
   drawBoard(); b.classList.add("show");
 }
 function hideBoard() { $("board").classList.remove("show"); }
 
+// Switch between Practice and Daily (optionally a make-up date)
+function setMode(newMode, date) {
+  mode = newMode;
+  dailyDate = date || todayKey();
+  $("modePractice").classList.toggle("on", mode === "practice");
+  $("modeDaily").classList.toggle("on", mode === "daily");
+  $("btnPrev").classList.toggle("hidden", mode === "daily");
+  $("btnNext").classList.toggle("hidden", mode === "daily");
+  $("daily").classList.toggle("show", mode === "daily");
+  loadPuzzle(); speakPosition();
+}
+
 /* ============================================================
-   SECTION 10: DRAWING THE PEEK BOARD
+   SECTION 13: DRAWING THE PEEK BOARD
    ============================================================ */
 const GLYPH = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
 function drawBoard() {
@@ -480,15 +630,52 @@ function drawBoard() {
     const d = document.createElement("div");
     d.className = "sq " + ((r + c) % 2 ? "d" : "l");
     if (p) d.innerHTML = '<span class="' + p.color + '">' + GLYPH[p.type] + "</span>";
-    if (c === 0) d.innerHTML += "<small>" + (8 - r) + "</small>";   // rank labels on the left edge
+    if (c === 0) d.innerHTML += "<small>" + (8 - r) + "</small>";
     b.appendChild(d);
   }));
 }
 
 /* ============================================================
-   SECTION 11: SPEECH RECOGNITION (push-to-talk)
-   Sends up to 5 guesses from the recognizer; the first one that
-   makes sense as a command or a legal move wins.
+   SECTION 14: STATS + DAILY PANEL DISPLAY
+   ============================================================ */
+function updateStats() {
+  const streak = currentStreak();
+  $("stats").innerHTML = '<span class="score">' + progress.points + " pts</span><br>" +
+    "🔥 " + streak + " day" + (streak === 1 ? "" : "s") + " · ❄️ " + progress.freezes;
+}
+
+function scoreSummary() {
+  return "You have " + progress.points + " points, a " + currentStreak() + " day streak, and " +
+         progress.freezes + " streak freeze" + (progress.freezes === 1 ? "" : "s") + ".";
+}
+
+function updateDailyPanel() {
+  const today = todayKey();
+  const playing = dailyDate === today ? "today's puzzle" : "make-up for " + prettyDay(dailyDate);
+  $("dailyStatus").textContent = covered(today)
+    ? "Today's daily is done ✓ (playing " + playing + ")"
+    : "Today's daily isn't done yet (playing " + playing + ")";
+  const box = $("makeups"); box.innerHTML = "";
+  const missed = missedDays();
+  if (missed.length) {
+    $("dailyStatus").textContent += ". Missed days you can still make up:";
+    missed.forEach(k => {
+      const btn = document.createElement("button");
+      btn.textContent = prettyDay(k);
+      btn.onclick = () => setMode("daily", k);
+      box.appendChild(btn);
+    });
+    if (dailyDate !== today) {
+      const t = document.createElement("button");
+      t.textContent = "Back to today";
+      t.onclick = () => setMode("daily");
+      box.appendChild(t);
+    }
+  }
+}
+
+/* ============================================================
+   SECTION 15: SPEECH RECOGNITION (push-to-talk)
    ============================================================ */
 const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, listening = false;
@@ -502,13 +689,10 @@ if (Rec) {
     handleInput(guesses);
   };
   rec.onerror = e => {
-    // Show the exact error code so problems can be diagnosed
     if (e.error === "not-allowed" || e.error === "service-not-allowed")
       reply("Microphone permission was refused (" + e.error + "). Use the typed box below for now.", "bad");
-    else if (e.error === "audio-capture")
-      reply("No microphone was found.", "bad");
-    else if (e.error !== "no-speech" && e.error !== "aborted")
-      reply("Voice input error: " + e.error, "bad");
+    else if (e.error === "audio-capture") reply("No microphone was found.", "bad");
+    else if (e.error !== "no-speech" && e.error !== "aborted") reply("Voice input error: " + e.error, "bad");
   };
   rec.onend = () => { listening = false; $("mic").classList.remove("listening"); $("mic").textContent = "Tap to speak"; };
 }
@@ -516,19 +700,18 @@ if (Rec) {
 $("mic").onclick = () => {
   if (!rec) { reply("Voice input isn't supported in this browser. Use the typed box below.", "bad"); return; }
   if (listening) { rec.stop(); return; }
-  if ("speechSynthesis" in window) speechSynthesis.cancel();   // stop talking before listening
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
   try { rec.start(); listening = true; $("mic").classList.add("listening"); $("mic").textContent = "Listening…"; }
   catch (e) { /* already started */ }
 };
 
 /* ============================================================
-   SECTION 12: ROUTING INPUT (voice guesses or typed text)
+   SECTION 16: ROUTING INPUT (voice guesses or typed text)
    ============================================================ */
 function handleInput(guesses) {
-  // Prefer the first guess that is a command, then the first that parses as a legal move
   for (const g of guesses) if (handleCommand(g)) return;
   for (const g of guesses) if (!matchMove(g).error) { tryMove(g); return; }
-  tryMove(guesses[0]);   // nothing fit: report the error for the top guess
+  tryMove(guesses[0]);
 }
 
 $("typed").onsubmit = e => {
@@ -539,22 +722,23 @@ $("typed").onsubmit = e => {
   $("typedInput").value = "";
   handleInput([v]);
 };
+$("btnPrev").onclick = prevPuzzle;
 $("btnRepeat").onclick = speakPosition;
 $("btnPeek").onclick = togglePeek;
 $("btnSolution").onclick = revealAnswer;
 $("btnNext").onclick = nextPuzzle;
+$("modePractice").onclick = () => setMode("practice");
+$("modeDaily").onclick = () => setMode("daily");
 
 /* ============================================================
-   SECTION 13: SMALL HELPERS
+   SECTION 17: SMALL HELPERS + STARTUP
    ============================================================ */
 function $(id) { return document.getElementById(id); }
 function capitalize(s) { return s[0].toUpperCase() + s.slice(1); }
 function setFeedback(text, cls) { const f = $("feedback"); f.textContent = text; f.className = cls || ""; }
 function reply(text, cls) { setFeedback(text, cls); say(text); }
-function updateStats() {
-  $("stats").textContent = progress.solved + " solved, " + progress.peeks + " peeks";
-}
 
+applyFreezes();
 loadPuzzle();
 </script>
 </body>
